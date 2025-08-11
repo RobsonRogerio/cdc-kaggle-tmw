@@ -54,24 +54,49 @@ def create_cdc(df_last, df_actual, pk, date_field):
     return df_cdc
 
 def process_cdc(tables):
-
     print("Processando CDC de todas tabelas...")
 
     for t in tables:
-        df_last = pd.read_csv(f"./data/last/{t['name']}.csv", sep=t["sep"])
-        df_actual = pd.read_csv(f"./data/actual/{t['name']}.csv", sep=t["sep"])
+        file_last = f"./data/last/{t['name']}.csv"
+        file_actual = f"./data/actual/{t['name']}.csv"
+
+        # Leitura da versão anterior
+        print(f"[LOG] Tentando ler versão anterior: {file_last}")
+        skipped_lines_last = 0
+        try:
+            df_last = pd.read_csv(file_last, sep=t["sep"], on_bad_lines='skip')
+        except pd.errors.ParserError as e:
+            print(f"[ERRO] ParserError em {file_last}: {e}")
+            continue
+        except Exception as e:
+            print(f"[ERRO] Falha ao ler {file_last}: {e}")
+            continue
+
+        # Leitura da versão atual
+        print(f"[LOG] Tentando ler versão atual: {file_actual}")
+        try:
+            df_actual = pd.read_csv(file_actual, sep=t["sep"], on_bad_lines='skip')
+        except pd.errors.ParserError as e:
+            print(f"[ERRO] ParserError em {file_actual}: {e}")
+            continue
+        except Exception as e:
+            print(f"[ERRO] Falha ao ler {file_actual}: {e}")
+            continue
+
+        # Processa o CDC
         df_cdc = create_cdc(df_last, df_actual, t["pk"], t["date_field"])
 
         if df_cdc.shape[0] == 0:
             print(f"Nenhuma alteração encontrada para a tabela {t['name']}.")
             continue
-        
+
         if not os.path.exists("./data/cdc"):
             os.makedirs("./data/cdc")
 
         now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"./data/cdc/{t['name']}_{now}.csv"
 
+        print(f"[LOG] Salvando CDC de {t['name']} em {filename}")
         df_cdc.to_csv(filename, index=False, sep=t["sep"])
 
     print("CDC processado com sucesso!")
