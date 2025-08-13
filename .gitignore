@@ -1,3 +1,8 @@
 *.env
 *.csv
 *.zip
+*.parquet
+*.crc
+*.db
+data/actual_parquet_temp/
+data/cdc_parquet_temp/
