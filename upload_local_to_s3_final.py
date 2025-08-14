@@ -12,7 +12,7 @@ from pyspark.sql import SparkSession
 LOCAL_BASE_FOLDER = r"D:\Cursos\Lakehouse_TMW\cdc-kaggle\data"
 LOCAL_ZIP_PATH = os.path.join(LOCAL_BASE_FOLDER, "kaggle_download.zip")
 
-# Pasta actual e cdc serão tratadas localmente
+# Pastas locais e respectivos destinos no S3 (exceto 'last', que é gerada no S3)
 FOLDERS = {
     "actual": {
         "local": os.path.join(LOCAL_BASE_FOLDER, "actual"),
@@ -26,6 +26,14 @@ FOLDERS = {
 
 BUCKET_NAME = "treinamento-tmw"
 DATASET_NAME = "teocalvo/teomewhy-loyalty-system"
+
+# Mapeamento de nomes só para a pasta CDC
+CDC_NAME_MAP = {
+    "clientes": "customers",
+    "transacao_produto": "transactions_product",
+    "transacoes": "transactions",
+    "transacao": "transactions"  # 🔹 Corrige pasta indevida "transacao"
+}
 
 # ============================================================
 # INICIALIZAÇÃO DE CLIENTES
@@ -55,7 +63,6 @@ def download_kaggle_dataset():
     print(f"Download concluído! Arquivo: {LOCAL_ZIP_PATH}")
 
 def extract_zip():
-    """Extrai o zip para a pasta 'actual' local."""
     actual_folder = FOLDERS["actual"]["local"]
     print(f"Extraindo arquivos para {actual_folder} ...")
     if os.path.exists(actual_folder):
@@ -68,7 +75,6 @@ def extract_zip():
     print("Extração concluída!")
 
 def list_s3_files(prefix):
-    """Lista arquivos em um prefixo do S3."""
     paginator = s3_client.get_paginator('list_objects_v2')
     pages = paginator.paginate(Bucket=BUCKET_NAME, Prefix=prefix)
     files = []
@@ -78,7 +84,6 @@ def list_s3_files(prefix):
     return files
 
 def move_s3_objects(source_prefix, dest_prefix):
-    """Move (copia e depois deleta) arquivos de um prefixo para outro no S3."""
     print(f"Movendo dados antigos de s3://{BUCKET_NAME}/{source_prefix} para s3://{BUCKET_NAME}/{dest_prefix} ...")
     files = list_s3_files(source_prefix)
     for key in files:
@@ -94,10 +99,6 @@ def move_s3_objects(source_prefix, dest_prefix):
     print("Movimentação concluída!")
 
 def convert_and_upload_parquet_for_folder(folder_key):
-    """
-    Converte CSV para Parquet e faz upload para o S3.
-    Apenas para pastas locais (actual, cdc).
-    """
     LOCAL_FOLDER = FOLDERS[folder_key]["local"]
     S3_PREFIX = FOLDERS[folder_key]["s3_prefix"]
     PARQUET_FOLDER = os.path.join(LOCAL_BASE_FOLDER, f"{folder_key}_parquet_temp")
@@ -114,8 +115,20 @@ def convert_and_upload_parquet_for_folder(folder_key):
             print(f"[{folder_key}] Ignorando: {filename}")
             continue
         
+        # Nome original sem extensão
+        original_name = os.path.splitext(filename)[0]
+        # Remove sufixo de timestamp, se existir
+        nome_limpo = original_name.split("_")[0]
+
+        # Se for pasta CDC, aplica mapeamento de nomes
+        if folder_key == "cdc":
+            if nome_limpo not in CDC_NAME_MAP:
+                print(f"[AVISO] Nome '{nome_limpo}' não está no mapa de CDC! Usando nome original.")
+            table_name = CDC_NAME_MAP.get(nome_limpo, nome_limpo)
+        else:
+            table_name = nome_limpo
+
         csv_path = os.path.join(LOCAL_FOLDER, filename)
-        table_name = os.path.splitext(filename)[0]
 
         print(f"[{folder_key}] Lendo {filename} com Spark...")
         df = spark.read.csv(csv_path, header=True, sep=";")
@@ -128,31 +141,45 @@ def convert_and_upload_parquet_for_folder(folder_key):
     for root, _, files in os.walk(PARQUET_FOLDER):
         for file in files:
             local_file = os.path.join(root, file)
-            relative_path = os.path.relpath(local_file, PARQUET_FOLDER)
-            s3_key = os.path.join(S3_PREFIX, relative_path).replace("\\", "/")
+            table_name_path = os.path.relpath(root, PARQUET_FOLDER).replace("\\", "/")
+            s3_key = os.path.join(S3_PREFIX, table_name_path, file).replace("\\", "/")
             s3_client.upload_file(local_file, BUCKET_NAME, s3_key)
-            print(f"✓ [{folder_key}] {file} enviado")
+            print(f"✓ [{folder_key}] {file} enviado para {s3_key}")
     print(f"[{folder_key}] Upload concluído!")
+
+def print_s3_structure():
+    """Lista o conteúdo esperado no S3 após execução."""
+    print("\n📂 Estrutura final no S3:")
+    s3_prefixes = [
+        "raw/data/actual/",
+        "raw/data/last/",
+        "raw/data/cdc/customers/",
+        "raw/data/cdc/transactions_product/",
+        "raw/data/cdc/transactions/"
+    ]
+    for prefix in s3_prefixes:
+        print(f"\n🗂 {prefix}")
+        files = list_s3_files(prefix)
+        if not files:
+            print("  (vazio)")
+        else:
+            for key in files:
+                print(f"  - {key}")
 
 # ============================================================
 # FLUXO PRINCIPAL
 # ============================================================
 
 def main():
-    # 1️⃣ Baixa o dataset do Kaggle
     download_kaggle_dataset()
-
-    # 2️⃣ Extrai para pasta 'actual'
     extract_zip()
-
-    # 3️⃣ Copia os dados existentes no S3/actual para S3/last
     move_s3_objects("raw/data/actual/", "raw/data/last/")
 
-    # 4️⃣ Converte e envia 'actual' e 'cdc' (pastas locais)
     for folder_key in FOLDERS:
         convert_and_upload_parquet_for_folder(folder_key)
 
     print("\n✅ Processo completo finalizado!")
+    print_s3_structure()
 
 if __name__ == "__main__":
     main()
