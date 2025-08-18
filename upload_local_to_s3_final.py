@@ -9,7 +9,7 @@ from pyspark.sql import SparkSession
 # CONFIGURAÇÕES BÁSICAS
 # ============================================================
 
-LOCAL_BASE_FOLDER = r"D:\Cursos\Lakehouse_TMW\cdc-kaggle\data"
+LOCAL_BASE_FOLDER = r"D:\Cursos\Lakehouse_TMW\cdc-kaggle-tmw\data"
 LOCAL_ZIP_PATH = os.path.join(LOCAL_BASE_FOLDER, "kaggle_download.zip")
 
 # Pastas locais e respectivos destinos no S3 (exceto 'last', que é gerada no S3)
