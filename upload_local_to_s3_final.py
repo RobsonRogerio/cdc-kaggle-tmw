@@ -2,14 +2,16 @@ import os
 import zipfile
 import boto3
 import shutil
+import re
 from kaggle.api.kaggle_api_extended import KaggleApi
 from pyspark.sql import SparkSession
+import glob
 
 # ============================================================
 # CONFIGURAÇÕES BÁSICAS
 # ============================================================
 
-LOCAL_BASE_FOLDER = r"D:\Cursos\Lakehouse_TMW\cdc-kaggle-tmw\data"
+LOCAL_BASE_FOLDER = r"D:\\Cursos\\Lakehouse_TMW\\cdc-kaggle-tmw\\data"
 LOCAL_ZIP_PATH = os.path.join(LOCAL_BASE_FOLDER, "kaggle_download.zip")
 
 # Pastas locais e respectivos destinos no S3 (exceto 'last', que é gerada no S3)
@@ -31,8 +33,7 @@ DATASET_NAME = "teocalvo/teomewhy-loyalty-system"
 CDC_NAME_MAP = {
     "clientes": "customers",
     "transacao_produto": "transactions_product",
-    "transacoes": "transactions",
-    "transacao": "transactions"  # 🔹 Corrige pasta indevida "transacao"
+    "transacoes": "transactions"
 }
 
 # ============================================================
@@ -101,11 +102,6 @@ def move_s3_objects(source_prefix, dest_prefix):
 def convert_and_upload_parquet_for_folder(folder_key):
     LOCAL_FOLDER = FOLDERS[folder_key]["local"]
     S3_PREFIX = FOLDERS[folder_key]["s3_prefix"]
-    PARQUET_FOLDER = os.path.join(LOCAL_BASE_FOLDER, f"{folder_key}_parquet_temp")
-
-    if os.path.exists(PARQUET_FOLDER):
-        shutil.rmtree(PARQUET_FOLDER)
-    os.makedirs(PARQUET_FOLDER, exist_ok=True)
 
     for filename in os.listdir(LOCAL_FOLDER):
         if not filename.lower().endswith(".csv"):
@@ -114,13 +110,12 @@ def convert_and_upload_parquet_for_folder(folder_key):
         if filename.lower() == "database.db":
             print(f"[{folder_key}] Ignorando: {filename}")
             continue
-        
-        # Nome original sem extensão
-        original_name = os.path.splitext(filename)[0]
-        # Remove sufixo de timestamp, se existir
-        nome_limpo = original_name.split("_")[0]
 
-        # Se for pasta CDC, aplica mapeamento de nomes
+        original_name = os.path.splitext(filename)[0]
+        nome_limpo = re.sub(r'(_\d{8}_\d{6}|_\d{8}|\d{14})$', '', original_name)
+
+        print(f"[DEBUG] original_name: {original_name}, nome_limpo (sem timestamp): {nome_limpo}")
+
         if folder_key == "cdc":
             if nome_limpo not in CDC_NAME_MAP:
                 print(f"[AVISO] Nome '{nome_limpo}' não está no mapa de CDC! Usando nome original.")
@@ -128,23 +123,56 @@ def convert_and_upload_parquet_for_folder(folder_key):
         else:
             table_name = nome_limpo
 
-        csv_path = os.path.join(LOCAL_FOLDER, filename)
+        print(f"[DEBUG] filename: {filename}, original_name: {original_name}, nome_limpo: {nome_limpo}, table_name: {table_name}")
 
+        csv_path = os.path.join(LOCAL_FOLDER, filename)
+        if not os.path.isfile(csv_path):
+            print(f"[ERRO] Arquivo para leitura nao existe: {csv_path}")
+            continue
         print(f"[{folder_key}] Lendo {filename} com Spark...")
         df = spark.read.csv(csv_path, header=True, sep=";")
 
-        parquet_path = os.path.join(PARQUET_FOLDER, table_name)
-        print(f"[{folder_key}] Convertendo para Parquet: {parquet_path}")
-        df.write.mode("overwrite").parquet(parquet_path)
+        # Salvar CSV local (mantendo histórica e adicionando, sem apagar)
+        if folder_key == "cdc":
+            csv_output_file = os.path.join(FOLDERS["cdc"]["local"], f"{original_name}.csv")
+            if os.path.exists(csv_output_file):
+                print(f"[DEBUG] Arquivo já existe: {csv_output_file}, não será apagado nem sobrescrito.")
+            else:
+                # Para gerar o CSV somente se não existir ainda
+                temp_csv_dir = os.path.join(LOCAL_BASE_FOLDER, "temp_csv_dir")
+                if os.path.exists(temp_csv_dir):
+                    shutil.rmtree(temp_csv_dir)
 
-    print(f"[{folder_key}] Fazendo upload para s3://{BUCKET_NAME}/{S3_PREFIX} ...")
-    for root, _, files in os.walk(PARQUET_FOLDER):
-        for file in files:
-            local_file = os.path.join(root, file)
-            table_name_path = os.path.relpath(root, PARQUET_FOLDER).replace("\\", "/")
-            s3_key = os.path.join(S3_PREFIX, table_name_path, file).replace("\\", "/")
-            s3_client.upload_file(local_file, BUCKET_NAME, s3_key)
-            print(f"✓ [{folder_key}] {file} enviado para {s3_key}")
+                df.coalesce(1).write.mode("overwrite").option("header", True).csv(temp_csv_dir)
+
+                csv_files = glob.glob(os.path.join(temp_csv_dir, "*.csv"))
+                if csv_files:
+                    shutil.move(csv_files[0], csv_output_file)
+                    print(f"[{folder_key}] Salvo CSV local: {csv_output_file}")
+                else:
+                    print(f"[ERRO] Nenhum CSV encontrado no diretório temporário {temp_csv_dir}")
+                shutil.rmtree(temp_csv_dir)
+
+        # Gerar parquet temporário para upload direto ao S3 e apagar depois
+        print(f"[{folder_key}] Convertendo para Parquet e enviando direto para S3 em: {S3_PREFIX}{table_name}/")
+
+        s3_tmp_dir = os.path.join(LOCAL_BASE_FOLDER, "tmp_s3_parquet")
+        if os.path.exists(s3_tmp_dir):
+            shutil.rmtree(s3_tmp_dir)
+        os.makedirs(s3_tmp_dir)
+
+        tmp_parquet_path = os.path.join(s3_tmp_dir, "data")
+        df.write.mode("overwrite").parquet(tmp_parquet_path)
+
+        for root, _, files in os.walk(tmp_parquet_path):
+            for file in files:
+                local_file = os.path.join(root, file)
+                s3_key = os.path.join(S3_PREFIX, table_name, file).replace("\\", "/")
+                s3_client.upload_file(local_file, BUCKET_NAME, s3_key)
+                print(f"✓ [{folder_key}] {file} enviado para {s3_key}")
+
+        shutil.rmtree(s3_tmp_dir)
+
     print(f"[{folder_key}] Upload concluído!")
 
 def print_s3_structure():
