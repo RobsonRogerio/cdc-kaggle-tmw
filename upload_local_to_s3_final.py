@@ -22,7 +22,7 @@ FOLDERS = {
     },
     "cdc": {
         "local": os.path.join(LOCAL_BASE_FOLDER, "cdc"),
-        "s3_prefix": "raw/data/cdc/"
+        "s3_prefix": "raw/upsell/cdc/"
     }
 }
 
@@ -181,9 +181,9 @@ def print_s3_structure():
     s3_prefixes = [
         "raw/data/actual/",
         "raw/data/last/",
-        "raw/data/cdc/customers/",
-        "raw/data/cdc/transactions_product/",
-        "raw/data/cdc/transactions/"
+        "raw/upsell/cdc/customers/",
+        "raw/upsell/cdc/transactions_product/",
+        "raw/upsell/cdc/transactions/"
     ]
     for prefix in s3_prefixes:
         print(f"\n🗂 {prefix}")
