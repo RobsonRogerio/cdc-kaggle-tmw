@@ -42,7 +42,11 @@ CDC_NAME_MAP = {
 
 s3_client = boto3.client("s3")
 kaggle_api = KaggleApi()
-spark = SparkSession.builder.appName("csv_to_parquet_upload").getOrCreate()
+spark = SparkSession.builder \
+    .appName("csv_to_parquet_upload") \
+    .config("spark.hadoop.native.io", "false") \
+    .config("spark.driver.extraLibraryPath", r"C:\hadoop\bin") \
+    .getOrCreate()
 
 # ============================================================
 # FUNÇÕES AUXILIARES
