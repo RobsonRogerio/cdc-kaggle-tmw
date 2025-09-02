@@ -36,6 +36,55 @@ CDC_NAME_MAP = {
     "transacoes": "transactions"
 }
 
+# =================================================================
+# 1. DEFINA OS SCHEMAS PARA CADA TABELA
+# =================================================================
+from pyspark.sql.types import (
+    StructType, StructField,
+    StringType, LongType, IntegerType,
+    DoubleType, DecimalType, TimestampType
+)
+
+SCHEMA_CLIENTES = StructType([
+    StructField("IdCliente", StringType(), True),
+    StructField("FlEmail", LongType(), True),
+    StructField("FlTwitch", LongType(), True),
+    StructField("FlBlueSky", LongType(), True),
+    StructField("FlInstagram", LongType(), True),
+    StructField("QtdePontos", LongType(), True),
+    StructField("DtCriacao", TimestampType(), True),
+    StructField("DtAtualizacao", TimestampType(), True),
+    StructField("op", StringType(), True),
+    StructField("change_timestamp", TimestampType(), True)
+])
+
+SCHEMA_TRANSACOES = StructType([
+    StructField("IdTransacao", StringType(), True),
+    StructField("IdCliente", StringType(), True),
+    StructField("DtCriacao", StringType(), True),    # ATENÇÃO: Aqui o tipo está como StringType, conforme seu JSON original
+    StructField("QtdePontos", LongType(), True),
+    StructField("DescSistemaOrigem", StringType(), True),
+    StructField("op", StringType(), True),
+    StructField("change_timestamp", TimestampType(), True)
+])
+
+SCHEMA_TRANSACAO_PRODUTO = StructType([
+    StructField("IdTransacaoProduto", StringType(), True),
+    StructField("IdTransacao", StringType(), True),
+    StructField("IdProduto", StringType(), True),
+    StructField("QtdeProduto", LongType(), True),
+    StructField("VlProduto", DecimalType(12, 2), True),
+    StructField("op", StringType(), True),
+    StructField("change_timestamp", TimestampType(), True)
+])
+
+# Dicionário de schemas por tabela (opcional, para organização)
+TABELA_SCHEMA = {
+    "clientes": SCHEMA_CLIENTES,
+    "transacoes": SCHEMA_TRANSACOES,
+    "transacao_produto": SCHEMA_TRANSACAO_PRODUTO
+}
+
 # ============================================================
 # INICIALIZAÇÃO DE CLIENTES
 # ============================================================
