@@ -103,6 +103,9 @@ def move_s3_objects(source_prefix, dest_prefix):
         print("Nenhum arquivo antigo encontrado.")
     print("Movimentação concluída!")
 
+from datetime import datetime
+from pyspark.sql.functions import lit
+
 def convert_and_upload_parquet_for_folder(folder_key):
     LOCAL_FOLDER = FOLDERS[folder_key]["local"]
     S3_PREFIX = FOLDERS[folder_key]["s3_prefix"]
@@ -131,24 +134,32 @@ def convert_and_upload_parquet_for_folder(folder_key):
 
         csv_path = os.path.join(LOCAL_FOLDER, filename)
         if not os.path.isfile(csv_path):
-            print(f"[ERRO] Arquivo para leitura nao existe: {csv_path}")
+            print(f"[ERRO] Arquivo para leitura não existe: {csv_path}")
             continue
         print(f"[{folder_key}] Lendo {filename} com Spark...")
         df = spark.read.csv(csv_path, header=True, sep=";")
 
-        # Salvar CSV local (mantendo histórica e adicionando, sem apagar)
+        # ===============================
+        # ALTERAÇÃO 1/2: Adiciona coluna change_timestamp
+        # Apenas para arquivos CDC, ANTES de salvar
+        if folder_key == "cdc":
+            change_timestamp = datetime.utcnow()
+            df = df.withColumn("change_timestamp", lit(change_timestamp))
+        # ===============================
+
+        # Salvar CSV local (mantendo histórico)
         if folder_key == "cdc":
             csv_output_file = os.path.join(FOLDERS["cdc"]["local"], f"{original_name}.csv")
             if os.path.exists(csv_output_file):
                 print(f"[DEBUG] Arquivo já existe: {csv_output_file}, não será apagado nem sobrescrito.")
             else:
-                # Para gerar o CSV somente se não existir ainda
                 temp_csv_dir = os.path.join(LOCAL_BASE_FOLDER, "temp_csv_dir")
                 if os.path.exists(temp_csv_dir):
                     shutil.rmtree(temp_csv_dir)
-
+                
+                # ===============================
+                # ALTERAÇÃO 2/2: O DataFrame já tem change_timestamp aqui
                 df.coalesce(1).write.mode("overwrite").option("header", True).csv(temp_csv_dir)
-
                 csv_files = glob.glob(os.path.join(temp_csv_dir, "*.csv"))
                 if csv_files:
                     shutil.move(csv_files[0], csv_output_file)
@@ -156,8 +167,9 @@ def convert_and_upload_parquet_for_folder(folder_key):
                 else:
                     print(f"[ERRO] Nenhum CSV encontrado no diretório temporário {temp_csv_dir}")
                 shutil.rmtree(temp_csv_dir)
+        # ===============================
 
-        # Gerar parquet temporário para upload direto ao S3 e apagar depois
+        # Gerar parquet temporário para upload direto ao S3
         print(f"[{folder_key}] Convertendo para Parquet e enviando direto para S3 em: {S3_PREFIX}{table_name}/")
 
         s3_tmp_dir = os.path.join(LOCAL_BASE_FOLDER, "tmp_s3_parquet")
