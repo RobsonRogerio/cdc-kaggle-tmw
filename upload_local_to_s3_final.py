@@ -61,7 +61,7 @@ SCHEMA_CLIENTES = StructType([
 SCHEMA_TRANSACOES = StructType([
     StructField("IdTransacao", StringType(), True),
     StructField("IdCliente", StringType(), True),
-    StructField("DtCriacao", StringType(), True),    # ATENÇÃO: Aqui o tipo está como StringType, conforme seu JSON original
+    StructField("DtCriacao", TimestampType(), True),    # ATENÇÃO: Aqui o tipo está como StringType, conforme seu JSON original
     StructField("QtdePontos", LongType(), True),
     StructField("DescSistemaOrigem", StringType(), True),
     StructField("op", StringType(), True),
@@ -80,9 +80,9 @@ SCHEMA_TRANSACAO_PRODUTO = StructType([
 
 # Dicionário de schemas por tabela (opcional, para organização)
 TABELA_SCHEMA = {
-    "clientes": SCHEMA_CLIENTES,
-    "transacoes": SCHEMA_TRANSACOES,
-    "transacao_produto": SCHEMA_TRANSACAO_PRODUTO
+    "customers": SCHEMA_CLIENTES,
+    "transactions_product": SCHEMA_TRANSACAO_PRODUTO,
+    "transactions": SCHEMA_TRANSACOES
 }
 
 # ============================================================
@@ -156,6 +156,13 @@ from datetime import datetime
 from pyspark.sql.functions import lit
 
 def convert_and_upload_parquet_for_folder(folder_key):
+    from datetime import datetime
+    from pyspark.sql.functions import lit
+    import glob
+    import os
+    import re
+    import shutil
+
     LOCAL_FOLDER = FOLDERS[folder_key]["local"]
     S3_PREFIX = FOLDERS[folder_key]["s3_prefix"]
 
@@ -167,11 +174,13 @@ def convert_and_upload_parquet_for_folder(folder_key):
             print(f"[{folder_key}] Ignorando: {filename}")
             continue
 
+        # Extrai o nome limpo (sem timestamps ou sufixos)
         original_name = os.path.splitext(filename)[0]
         nome_limpo = re.sub(r'(_\d{8}_\d{6}|_\d{8}|\d{14})$', '', original_name)
 
         print(f"[DEBUG] original_name: {original_name}, nome_limpo (sem timestamp): {nome_limpo}")
 
+        # Mapeia para o nome da tabela de acordo com CDC_NAME_MAP
         if folder_key == "cdc":
             if nome_limpo not in CDC_NAME_MAP:
                 print(f"[AVISO] Nome '{nome_limpo}' não está no mapa de CDC! Usando nome original.")
@@ -185,18 +194,39 @@ def convert_and_upload_parquet_for_folder(folder_key):
         if not os.path.isfile(csv_path):
             print(f"[ERRO] Arquivo para leitura não existe: {csv_path}")
             continue
-        print(f"[{folder_key}] Lendo {filename} com Spark...")
-        df = spark.read.csv(csv_path, header=True, sep=";")
 
-        # ===============================
-        # ALTERAÇÃO 1/2: Adiciona coluna change_timestamp
-        # Apenas para arquivos CDC, ANTES de salvar
+        print(f"[{folder_key}] Lendo {filename} com Spark...")
+
+        # =================================================================
+        # MODIFICAÇÃO CRÍTICA: Lê o CSV com o Schema Personalizado para CDC
+        # =================================================================
         if folder_key == "cdc":
+            # Recupera o schema correto para a tabela
+            schema = TABELA_SCHEMA.get(table_name)
+            if schema is None:
+                print(f"[ERRO] Schema não definido para tabela {table_name}. Pulando.")
+                continue
+            # Lê o CSV com o schema personalizado
+            df = spark.read.csv(
+                csv_path,
+                header=True,
+                sep=";",
+                schema=schema
+            )
+        else:
+            # Para outras pastas (como actual), mantém a leitura com inferência padrão
+            df = spark.read.csv(
+                csv_path,
+                header=True,
+                sep=";"
+            )
+
+        # Adiciona a coluna change_timestamp para arquivos CDC, se necessário
+        if folder_key == "cdc" and "change_timestamp" not in df.columns:
             change_timestamp = datetime.utcnow()
             df = df.withColumn("change_timestamp", lit(change_timestamp))
-        # ===============================
 
-        # Salvar CSV local (mantendo histórico)
+        # Salva o CSV local (mantendo histórico)
         if folder_key == "cdc":
             csv_output_file = os.path.join(FOLDERS["cdc"]["local"], f"{original_name}.csv")
             if os.path.exists(csv_output_file):
@@ -205,9 +235,6 @@ def convert_and_upload_parquet_for_folder(folder_key):
                 temp_csv_dir = os.path.join(LOCAL_BASE_FOLDER, "temp_csv_dir")
                 if os.path.exists(temp_csv_dir):
                     shutil.rmtree(temp_csv_dir)
-                
-                # ===============================
-                # ALTERAÇÃO 2/2: O DataFrame já tem change_timestamp aqui
                 df.coalesce(1).write.mode("overwrite").option("header", True).csv(temp_csv_dir)
                 csv_files = glob.glob(os.path.join(temp_csv_dir, "*.csv"))
                 if csv_files:
@@ -216,9 +243,8 @@ def convert_and_upload_parquet_for_folder(folder_key):
                 else:
                     print(f"[ERRO] Nenhum CSV encontrado no diretório temporário {temp_csv_dir}")
                 shutil.rmtree(temp_csv_dir)
-        # ===============================
 
-        # Gerar parquet temporário para upload direto ao S3
+        # Converte para Parquet e envia para o S3
         print(f"[{folder_key}] Convertendo para Parquet e enviando direto para S3 em: {S3_PREFIX}{table_name}/")
 
         s3_tmp_dir = os.path.join(LOCAL_BASE_FOLDER, "tmp_s3_parquet")
@@ -233,8 +259,11 @@ def convert_and_upload_parquet_for_folder(folder_key):
             for file in files:
                 local_file = os.path.join(root, file)
                 s3_key = os.path.join(S3_PREFIX, table_name, file).replace("\\", "/")
-                s3_client.upload_file(local_file, BUCKET_NAME, s3_key)
-                print(f"✓ [{folder_key}] {file} enviado para {s3_key}")
+                try:
+                    s3_client.upload_file(local_file, BUCKET_NAME, s3_key)
+                    print(f"✓ [{folder_key}] {file} enviado para {s3_key}")
+                except Exception as e:
+                    print(f"[ERRO] Falha ao enviar {local_file} para {s3_key}: {str(e)}")
 
         shutil.rmtree(s3_tmp_dir)
 
@@ -272,7 +301,7 @@ def main():
         convert_and_upload_parquet_for_folder(folder_key)
 
     print("\n✅ Processo completo finalizado!")
-    print_s3_structure()
+    #print_s3_structure()
 
 if __name__ == "__main__":
     main()
