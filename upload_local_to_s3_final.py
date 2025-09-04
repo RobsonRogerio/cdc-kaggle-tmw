@@ -1,20 +1,34 @@
+# ============================================================
+# IMPORTS
+# ============================================================
+
+# Bibliotecas padrão do Python
 import os
-import zipfile
-import boto3
 import shutil
-import re
-from kaggle.api.kaggle_api_extended import KaggleApi
-from pyspark.sql import SparkSession
+import zipfile
 import glob
+import re
+from datetime import datetime
+
+# AWS / Kaggle
+import boto3
+from kaggle.api.kaggle_api_extended import KaggleApi
+
+# PySpark
+from pyspark.sql import SparkSession
+from pyspark.sql.types import (
+    StructType, StructField,
+    StringType, LongType, DecimalType
+)
+from pyspark.sql.functions import col, lit
 
 # ============================================================
 # CONFIGURAÇÕES BÁSICAS
 # ============================================================
 
-LOCAL_BASE_FOLDER = r"D:\\Cursos\\Lakehouse_TMW\\cdc-kaggle-tmw\\data"
+LOCAL_BASE_FOLDER = r"D:\Cursos\Lakehouse_TMW\cdc-kaggle-tmw\data"
 LOCAL_ZIP_PATH = os.path.join(LOCAL_BASE_FOLDER, "kaggle_download.zip")
 
-# Pastas locais e respectivos destinos no S3 (exceto 'last', que é gerada no S3)
 FOLDERS = {
     "actual": {
         "local": os.path.join(LOCAL_BASE_FOLDER, "actual"),
@@ -29,43 +43,36 @@ FOLDERS = {
 BUCKET_NAME = "treinamento-tmw"
 DATASET_NAME = "teocalvo/teomewhy-loyalty-system"
 
-# Mapeamento de nomes só para a pasta CDC
 CDC_NAME_MAP = {
     "clientes": "customers",
     "transacao_produto": "transactions_product",
     "transacoes": "transactions"
 }
 
-# =================================================================
-# 1. DEFINA OS SCHEMAS PARA CADA TABELA
-# =================================================================
-from pyspark.sql.types import (
-    StructType, StructField,
-    StringType, LongType, IntegerType,
-    DoubleType, DecimalType, TimestampType
-)
+# ============================================================
+# SCHEMAS DAS TABELAS (datas como string)
+# ============================================================
 
 SCHEMA_CLIENTES = StructType([
     StructField("IdCliente", StringType(), True),
     StructField("FlEmail", LongType(), True),
     StructField("FlTwitch", LongType(), True),
+    StructField("FlYouTube", LongType(), True),
     StructField("FlBlueSky", LongType(), True),
     StructField("FlInstagram", LongType(), True),
     StructField("QtdePontos", LongType(), True),
-    StructField("DtCriacao", TimestampType(), True),
-    StructField("DtAtualizacao", TimestampType(), True),
-    StructField("op", StringType(), True),
-    StructField("change_timestamp", TimestampType(), True)
+    StructField("DtCriacao", StringType(), True),
+    StructField("DtAtualizacao", StringType(), True),
+    StructField("op", StringType(), True)
 ])
 
 SCHEMA_TRANSACOES = StructType([
     StructField("IdTransacao", StringType(), True),
     StructField("IdCliente", StringType(), True),
-    StructField("DtCriacao", TimestampType(), True),    # ATENÇÃO: Aqui o tipo está como StringType, conforme seu JSON original
-    StructField("QtdePontos", LongType(), True),
+    StructField("DtCriacao", StringType(), True),
+    StructField("QtdePontos", StringType(), True),
     StructField("DescSistemaOrigem", StringType(), True),
-    StructField("op", StringType(), True),
-    StructField("change_timestamp", TimestampType(), True)
+    StructField("op", StringType(), True)
 ])
 
 SCHEMA_TRANSACAO_PRODUTO = StructType([
@@ -74,11 +81,9 @@ SCHEMA_TRANSACAO_PRODUTO = StructType([
     StructField("IdProduto", StringType(), True),
     StructField("QtdeProduto", LongType(), True),
     StructField("VlProduto", DecimalType(12, 2), True),
-    StructField("op", StringType(), True),
-    StructField("change_timestamp", TimestampType(), True)
+    StructField("op", StringType(), True)
 ])
 
-# Dicionário de schemas por tabela (opcional, para organização)
 TABELA_SCHEMA = {
     "customers": SCHEMA_CLIENTES,
     "transactions_product": SCHEMA_TRANSACAO_PRODUTO,
@@ -144,7 +149,6 @@ def move_s3_objects(source_prefix, dest_prefix):
         filename = key.split('/')[-1]
         copy_source = {'Bucket': BUCKET_NAME, 'Key': key}
         new_key = dest_prefix + filename
-
         s3_client.copy_object(Bucket=BUCKET_NAME, CopySource=copy_source, Key=new_key)
         s3_client.delete_object(Bucket=BUCKET_NAME, Key=key)
         print(f"✓ {filename} movido para {dest_prefix}")
@@ -152,101 +156,64 @@ def move_s3_objects(source_prefix, dest_prefix):
         print("Nenhum arquivo antigo encontrado.")
     print("Movimentação concluída!")
 
-from datetime import datetime
-from pyspark.sql.functions import lit
+# ============================================================
+# FUNÇÃO PRINCIPAL DE CONVERSÃO E UPLOAD
+# ============================================================
 
 def convert_and_upload_parquet_for_folder(folder_key):
-    from datetime import datetime
-    from pyspark.sql.functions import lit
-    import glob
-    import os
-    import re
-    import shutil
-
     LOCAL_FOLDER = FOLDERS[folder_key]["local"]
     S3_PREFIX = FOLDERS[folder_key]["s3_prefix"]
 
     for filename in os.listdir(LOCAL_FOLDER):
-        if not filename.lower().endswith(".csv"):
-            print(f"[{folder_key}] Ignorando não-CSV: {filename}")
-            continue
-        if filename.lower() == "database.db":
-            print(f"[{folder_key}] Ignorando: {filename}")
+        if not filename.lower().endswith(".csv") or filename.lower() == "database.db":
             continue
 
-        # Extrai o nome limpo (sem timestamps ou sufixos)
         original_name = os.path.splitext(filename)[0]
         nome_limpo = re.sub(r'(_\d{8}_\d{6}|_\d{8}|\d{14})$', '', original_name)
 
-        print(f"[DEBUG] original_name: {original_name}, nome_limpo (sem timestamp): {nome_limpo}")
-
-        # Mapeia para o nome da tabela de acordo com CDC_NAME_MAP
-        if folder_key == "cdc":
-            if nome_limpo not in CDC_NAME_MAP:
-                print(f"[AVISO] Nome '{nome_limpo}' não está no mapa de CDC! Usando nome original.")
-            table_name = CDC_NAME_MAP.get(nome_limpo, nome_limpo)
-        else:
-            table_name = nome_limpo
-
-        print(f"[DEBUG] filename: {filename}, original_name: {original_name}, nome_limpo: {nome_limpo}, table_name: {table_name}")
-
+        table_name = CDC_NAME_MAP.get(nome_limpo, nome_limpo) if folder_key == "cdc" else nome_limpo
         csv_path = os.path.join(LOCAL_FOLDER, filename)
         if not os.path.isfile(csv_path):
-            print(f"[ERRO] Arquivo para leitura não existe: {csv_path}")
             continue
 
-        print(f"[{folder_key}] Lendo {filename} com Spark...")
-
-        # =================================================================
-        # MODIFICAÇÃO CRÍTICA: Lê o CSV com o Schema Personalizado para CDC
-        # =================================================================
+        # Leitura CSV com schema definido apenas para CDC
         if folder_key == "cdc":
-            # Recupera o schema correto para a tabela
             schema = TABELA_SCHEMA.get(table_name)
             if schema is None:
-                print(f"[ERRO] Schema não definido para tabela {table_name}. Pulando.")
                 continue
-            # Lê o CSV com o schema personalizado
-            df = spark.read.csv(
-                csv_path,
-                header=True,
-                sep=";",
-                schema=schema
-            )
+            df = spark.read.csv(csv_path, header=True, sep=";", schema=schema)
         else:
-            # Para outras pastas (como actual), mantém a leitura com inferência padrão
-            df = spark.read.csv(
-                csv_path,
-                header=True,
-                sep=";"
-            )
+            df = spark.read.csv(csv_path, header=True, sep=";")
 
-        # Adiciona a coluna change_timestamp para arquivos CDC, se necessário
-        if folder_key == "cdc" and "change_timestamp" not in df.columns:
-            change_timestamp = datetime.utcnow()
-            df = df.withColumn("change_timestamp", lit(change_timestamp))
-
-        # Salva o CSV local (mantendo histórico)
+        # Adiciona change_timestamp
         if folder_key == "cdc":
-            csv_output_file = os.path.join(FOLDERS["cdc"]["local"], f"{original_name}.csv")
-            if os.path.exists(csv_output_file):
-                print(f"[DEBUG] Arquivo já existe: {csv_output_file}, não será apagado nem sobrescrito.")
-            else:
-                temp_csv_dir = os.path.join(LOCAL_BASE_FOLDER, "temp_csv_dir")
-                if os.path.exists(temp_csv_dir):
-                    shutil.rmtree(temp_csv_dir)
-                df.coalesce(1).write.mode("overwrite").option("header", True).csv(temp_csv_dir)
-                csv_files = glob.glob(os.path.join(temp_csv_dir, "*.csv"))
-                if csv_files:
-                    shutil.move(csv_files[0], csv_output_file)
-                    print(f"[{folder_key}] Salvo CSV local: {csv_output_file}")
-                else:
-                    print(f"[ERRO] Nenhum CSV encontrado no diretório temporário {temp_csv_dir}")
-                shutil.rmtree(temp_csv_dir)
+            df = df.withColumn("change_timestamp", lit(datetime.utcnow()))
 
-        # Converte para Parquet e envia para o S3
-        print(f"[{folder_key}] Convertendo para Parquet e enviando direto para S3 em: {S3_PREFIX}{table_name}/")
+        # =================================================================
+        # Conversão de colunas de quantidade para bigint
+        # =================================================================
+        for col_name in df.columns:
+            if col_name.lower().startswith("qtde"):
+                # Converte string "1.0" → double → bigint
+                df = df.withColumn(col_name, col(col_name).cast("double").cast("bigint"))
 
+        # ---- Ajuste específico para transações ----
+        if folder_key == "cdc" and table_name == "transactions":
+            df = df.withColumn("QtdePontos_cast", col("QtdePontos").cast("long"))
+
+            print("\n🔎 Amostra de QtdePontos antes/depois do cast:")
+            df.select("QtdePontos", "QtdePontos_cast").show(20, truncate=False)
+
+            # Verifica se houve valores inválidos
+            nulls = df.filter(col("QtdePontos").isNotNull() & col("QtdePontos_cast").isNull()).count()
+            if nulls > 0:
+                print(f"⚠️ {nulls} valores de QtdePontos não puderam ser convertidos para long.")
+
+            # Substitui a coluna original pela convertida
+            df = df.drop("QtdePontos").withColumnRenamed("QtdePontos_cast", "QtdePontos")
+        # ------------------------------------------
+
+        # Converte para Parquet e envia para S3
         s3_tmp_dir = os.path.join(LOCAL_BASE_FOLDER, "tmp_s3_parquet")
         if os.path.exists(s3_tmp_dir):
             shutil.rmtree(s3_tmp_dir)
@@ -259,11 +226,7 @@ def convert_and_upload_parquet_for_folder(folder_key):
             for file in files:
                 local_file = os.path.join(root, file)
                 s3_key = os.path.join(S3_PREFIX, table_name, file).replace("\\", "/")
-                try:
-                    s3_client.upload_file(local_file, BUCKET_NAME, s3_key)
-                    print(f"✓ [{folder_key}] {file} enviado para {s3_key}")
-                except Exception as e:
-                    print(f"[ERRO] Falha ao enviar {local_file} para {s3_key}: {str(e)}")
+                s3_client.upload_file(local_file, BUCKET_NAME, s3_key)
 
         shutil.rmtree(s3_tmp_dir)
 
