@@ -132,23 +132,25 @@ def move_from_actual_to_last():
 
 def main():
 
-    timer = CONFIG["timer"]["value"]
+    # timer = CONFIG["timer"]["value"]
     
-    if CONFIG["timer"]["unit"] == "minutes":
-        timer *= 60
-    elif CONFIG["timer"]["unit"] == "hours":
-        timer *= 3600
-    elif CONFIG["timer"]["unit"] == "days":
-        timer *= 86400
+    # if CONFIG["timer"]["unit"] == "minutes":
+    #     timer *= 60
+    # elif CONFIG["timer"]["unit"] == "hours":
+    #     timer *= 3600
+    # elif CONFIG["timer"]["unit"] == "days":
+    #     timer *= 86400
 
-    while True:
+    # while True:
         dataset_name = CONFIG["dataset_name"]
         
         move_from_actual_to_last()
         download_kaggle_dataset(dataset_name)
         process_cdc(CONFIG["tables"])
-
-        time.sleep(timer)
+        
+        print("✅ Execução única do main.py concluída.")
+    
+        #time.sleep(timer)
     
 
 if __name__ == "__main__":
