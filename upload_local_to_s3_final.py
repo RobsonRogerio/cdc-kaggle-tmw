@@ -6,6 +6,8 @@
 import os
 import shutil
 import zipfile
+import sys
+import subprocess
 import glob
 import re
 from datetime import datetime
@@ -21,6 +23,29 @@ from pyspark.sql.types import (
     StringType, LongType, DecimalType
 )
 from pyspark.sql.functions import col, lit
+
+import subprocess
+import sys
+
+def run_main_py(timeout=300):  # timeout padrão: 5 minutos
+    print("Executando main.py...")
+    try:
+        # stdout=sys.stdout / stderr=sys.stderr fazem o log aparecer em tempo real no console
+        result = subprocess.run(
+            [sys.executable, "main.py"],
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            text=True,
+            check=True,
+            timeout=timeout
+        )
+        print("\n✅ main.py executado com sucesso.")
+    except subprocess.TimeoutExpired:
+        print(f"\n⏱️ Erro: main.py demorou mais de {timeout} segundos e foi finalizado.")
+    except subprocess.CalledProcessError as e:
+        print("\n❌ Erro ao executar main.py:")
+        print(e)
+        sys.exit(1)
 
 # ============================================================
 # CONFIGURAÇÕES BÁSICAS
@@ -256,6 +281,7 @@ def print_s3_structure():
 # ============================================================
 
 def main():
+    run_main_py()
     download_kaggle_dataset()
     extract_zip()
     move_s3_objects("raw/data/actual/", "raw/data/last/")
