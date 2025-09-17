@@ -12,12 +12,12 @@
             "sep": ";",
             "name": "clientes",
             "date_field": "DtAtualizacao",
-            "pk": "IdCliente"
+            "pk": "idCliente"
         },
         {
             "sep": ";",
             "name": "produtos",
-            "date_field": "DescProduto",
+            "date_field": "DescNomeProduto",
             "pk": "IdProduto"
         },
         {
@@ -29,8 +29,8 @@
         {
             "sep": ";",
             "name": "transacao_produto",
-            "date_field": "VlProduto",
-            "pk": "IdTransacaoProduto"
+            "date_field": "vlProduto",
+            "pk": "idTransacaoProduto"
         }
     ]
 }

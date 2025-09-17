@@ -19,6 +19,10 @@ KAGGLE_KEY = os.getenv("KAGGLE_KEY")
 
 def get_update_lines(df_last, df_actual, pk, date_field):
 
+    print("Colunas df_last:", df_last.columns.tolist())
+    print("Colunas df_actual:", df_actual.columns.tolist())
+    print("Chave primária esperada:", pk)
+
     df_update = df_last.merge(
         df_actual,
         how="left",
