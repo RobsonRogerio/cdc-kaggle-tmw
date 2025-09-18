@@ -71,7 +71,8 @@ DATASET_NAME = "teocalvo/teomewhy-loyalty-system"
 CDC_NAME_MAP = {
     "clientes": "customers",
     "transacao_produto": "transactions_product",
-    "transacoes": "transactions"
+    "transacoes": "transactions",
+    "produtos": "products"
 }
 
 # ============================================================
@@ -109,10 +110,19 @@ SCHEMA_TRANSACAO_PRODUTO = StructType([
     StructField("op", StringType(), True)
 ])
 
+SCHEMA_PRODUTOS = StructType([
+    StructField("IdProduto", StringType(), True),
+    StructField("DescNomeProduto", StringType(), True),
+    StructField("DescDescricaoProduto", StringType(), True),
+    StructField("DescCategoriaProduto", StringType(), True),
+    StructField("op", StringType(), True)
+])
+
 TABELA_SCHEMA = {
     "customers": SCHEMA_CLIENTES,
     "transactions_product": SCHEMA_TRANSACAO_PRODUTO,
-    "transactions": SCHEMA_TRANSACOES
+    "transactions": SCHEMA_TRANSACOES,
+    "products": SCHEMA_PRODUTOS
 }
 
 # ============================================================
@@ -265,7 +275,8 @@ def print_s3_structure():
         "raw/data/last/",
         "raw/upsell/cdc/customers/",
         "raw/upsell/cdc/transactions_product/",
-        "raw/upsell/cdc/transactions/"
+        "raw/upsell/cdc/transactions/",
+        "raw/upsell/cdc/products/"
     ]
     for prefix in s3_prefixes:
         print(f"\n🗂 {prefix}")
